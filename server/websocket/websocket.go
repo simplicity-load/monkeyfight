@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"strconv"
 	"sync"
 	"time"
 
@@ -27,7 +28,7 @@ func genUid() uid {
 type cliStore = *sync.Map
 
 // in seconds
-const GAME_LENGTH = 10
+const GAME_LENGTH = 30
 const gameLength = GAME_LENGTH * time.Second
 
 func Dispatcher(event <-chan CliEvent) {
@@ -36,7 +37,22 @@ func Dispatcher(event <-chan CliEvent) {
 	var timer = time.NewTimer(gameLength)
 
 	for {
+		prtt := ""
+		clients.Range(func(key, value any) bool {
+			cli, ok := value.(*client)
+			if !ok {
+				return true
+			}
+			prtt += cli.uid + " "
+			for _, v := range cli.keystrokes {
+
+				prtt += strconv.QuoteRune(v.Key)
+			}
+			prtt += " "
+			return true
+		})
 		slog.Debug("Dispatcher", "game", g.Words[:100], "state", g.State)
+		slog.Debug("Players", "p", prtt)
 		select {
 		case e := <-event:
 			go processEvent(clients, e, *g)
@@ -48,6 +64,7 @@ func Dispatcher(event <-chan CliEvent) {
 
 			if g.IsPlaying() {
 				g = game.New()
+				resetClientKeystrokes(clients)
 			} else if clientCount(clients) >= 2 {
 				g.Start()
 			}
@@ -68,6 +85,9 @@ func processEvent(clients cliStore, event CliEvent, g game.Game) {
 		clients.Delete(event.conn)
 		// TODO possibly notify other players that player quit
 	case Insert:
+		if !g.IsPlaying() {
+			return
+		}
 		slog.Debug("eventProcessor:Insert", "event", event)
 		cli, ok := clientByConn(event.conn, clients)
 		if !ok {
@@ -89,7 +109,7 @@ func broadcastEvent(clients cliStore, event CliEvent) {
 		slog.Error("broadcastEvent:clientByConn", "ip", event.conn.Conn.LocalAddr())
 		return
 	}
-	clients.Range(func(c, cli any) bool {
+	clients.Range(func(c, _ any) bool {
 		conn, ok := c.(*fiberWS.Conn)
 		if !ok {
 			return true // TODO error msg
@@ -107,12 +127,25 @@ func broadcastEvent(clients cliStore, event CliEvent) {
 }
 
 func broadcastMessage(clients cliStore, msg any) {
-	clients.Range(func(c, cli any) bool {
+	clients.Range(func(c, _ any) bool {
 		conn, ok := c.(*fiberWS.Conn)
 		if !ok {
 			return true // TODO error msg
 		}
 		sendMessage(conn, msg)
+		return true
+	})
+}
+
+func resetClientKeystrokes(clients cliStore) {
+	clients.Range(func(_, cli any) bool {
+		client, ok := cli.(*client)
+		if !ok {
+			return true // TODO error msg
+		}
+		client.Lock()
+		defer client.Unlock()
+		client.keystrokes = game.Keystrokes{}
 		return true
 	})
 }
