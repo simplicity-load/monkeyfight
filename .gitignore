@@ -1,0 +1,8 @@
+# nix
+.direnv/
+
+upload/
+
+# ssh keys
+.ssh/
+

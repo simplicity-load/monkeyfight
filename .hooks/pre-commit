@@ -1,0 +1,12 @@
+#!/bin/sh
+
+set -e
+
+BOLD_WHITE='\033[1;37m'
+NOCOL='\033[0m'
+
+STAGED_FILES=$(git diff --name-only --cached)
+
+echo "${BOLD_WHITE}[FORMAT] $ nix fmt${NOCOL}"
+nix fmt $STAGED_FILES
+git add $STAGED_FILES
