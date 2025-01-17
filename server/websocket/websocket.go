@@ -5,7 +5,6 @@ import (
 	"sync"
 	"time"
 
-	fiberWS "github.com/gofiber/contrib/websocket"
 	"monkeyfight.com/game"
 )
 
@@ -24,7 +23,7 @@ func Dispatcher(event <-chan CliEvent) {
 		select {
 		case e := <-event:
 			go processEvent(clients, e, *g)
-			if e.t == Insert {
+			if e.t == Insert && g.IsPlaying() {
 				go broadcastEvent(clients, e)
 			}
 		case <-timer.C:
@@ -45,27 +44,30 @@ func Dispatcher(event <-chan CliEvent) {
 func processEvent(clients cliStore, event CliEvent, g game.Game) {
 	switch event.t {
 	case Register:
-		slog.Debug("eventProcessor:Register", "event", event)
-		clients.Store(event.conn, &client{uid: genUid()})
-		sendMessage(event.conn, GameUpdate{g})
+		slog.Debug("processEvent:Register", "event", event)
+		cli := &client{uid: genUid()}
+		clients.Store(event.conn, cli)
+		sendMessage(event.conn, cli, GameUpdate{g})
 	case Unregister:
-		slog.Debug("eventProcessor:Unregister", "event", event)
+		slog.Debug("processEvent:Unregister", "event", event)
 		clients.Delete(event.conn)
 		// TODO possibly notify other players that player quit
 	case Insert:
 		if !g.IsPlaying() {
 			return
 		}
-		slog.Debug("eventProcessor:Insert", "event", event)
+		slog.Debug("processEvent:Insert", "event", event)
 		cli, ok := clients.Load(event.conn)
 		if !ok {
 			return // TODO error msg
 		}
-
-		cli.Lock()
-		defer cli.Unlock()
-
-		cli.keystrokes = append(cli.keystrokes, event.msg...)
+		err := cli.appendKeyStrokes(event.msg)
+		if err != nil {
+			slog.Error("processEvent:appendKeyStrokes", "err", err, "cli", cli)
+			sendMessage(event.conn, cli, ErrUpdate{
+				Msg: err.Error(),
+			})
+		}
 	}
 }
 
@@ -77,31 +79,27 @@ func broadcastEvent(clients cliStore, event CliEvent) {
 		slog.Error("broadcastEvent:clients.clientByConn", "ip", event.conn.Conn.LocalAddr())
 		return
 	}
-	clients.Range(func(c, _ any) bool {
-		conn, ok := c.(*fiberWS.Conn)
-		if !ok {
-			return true // TODO error msg
-		}
+	for conn, cli := range clients.All() {
 		if conn == event.conn {
-			return true
+			continue
 		}
-
-		sendMessage(conn, CliUpdate{
+		sendMessage(conn, cli, CliUpdate{
 			Uid:        eventCli.uid,
 			Keystrokes: event.msg,
 		})
-		return true
-	})
-}
-
-func broadcastMessage(clients cliStore, msg any) {
-	for conn := range clients.All() {
-		sendMessage(conn, msg)
 	}
 }
 
-func sendMessage(conn *fiberWS.Conn, v any) {
+func broadcastMessage(clients cliStore, msg any) {
+	for conn, cli := range clients.All() {
+		sendMessage(conn, cli, msg)
+	}
+}
+
+func sendMessage(conn sKey, cli sVal, v any) {
 	go func() {
+		cli.Lock()
+		defer cli.Unlock()
 		err := conn.Conn.WriteJSON(v)
 		if err != nil {
 			slog.Error("sendMessage", "error", err, "v", v)

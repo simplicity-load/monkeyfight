@@ -34,3 +34,6 @@ type CliUpdate struct {
 type GameUpdate struct {
 	Game game.Game `json:"g"`
 }
+type ErrUpdate struct {
+	Msg string `json:"err"`
+}
