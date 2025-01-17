@@ -1,7 +1,6 @@
 package main
 
 import (
-	"log"
 	"log/slog"
 	"os"
 	"time"
@@ -37,10 +36,6 @@ func main() {
 
 	wsGr := v1.Group("/ws")
 	wsGr.Use(websocket.UpgradeWall)
-
-	for range 10 {
-		log.Println("time", time.Now().UnixMilli())
-	}
 
 	event := make(chan websocket.CliEvent)
 	go websocket.Dispatcher(event)

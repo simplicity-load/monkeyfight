@@ -1,10 +1,7 @@
 package websocket
 
 import (
-	"fmt"
 	"log/slog"
-	"math/rand/v2"
-	"strconv"
 	"sync"
 	"time"
 
@@ -12,47 +9,18 @@ import (
 	"monkeyfight.com/game"
 )
 
-type uid = string
-type client struct {
-	sync.Mutex
-	uid        uid
-	keystrokes game.Keystrokes
-}
-
-func genUid() uid {
-	r := rand.IntN(60) | 1
-	now := uint64(time.Now().UnixMilli() << r)
-	return fmt.Sprintf("mf-%d", now)
-}
-
-type cliStore = *sync.Map
-
 // in seconds
 const GAME_LENGTH = 30
 const gameLength = GAME_LENGTH * time.Second
 
 func Dispatcher(event <-chan CliEvent) {
-	var clients cliStore = &sync.Map{}
-	var g = game.New()
-	var timer = time.NewTimer(gameLength)
+	clients := cliStore{&sync.Map{}}
+	g := game.New()
+	timer := time.NewTimer(gameLength)
 
 	for {
-		prtt := ""
-		clients.Range(func(key, value any) bool {
-			cli, ok := value.(*client)
-			if !ok {
-				return true
-			}
-			prtt += cli.uid + " "
-			for _, v := range cli.keystrokes {
-
-				prtt += strconv.QuoteRune(v.Key)
-			}
-			prtt += " "
-			return true
-		})
 		slog.Debug("Dispatcher", "game", g.Words[:100], "state", g.State)
-		slog.Debug("Players", "p", prtt)
+		slog.Debug("Players", "p", clients)
 		select {
 		case e := <-event:
 			go processEvent(clients, e, *g)
@@ -64,8 +32,8 @@ func Dispatcher(event <-chan CliEvent) {
 
 			if g.IsPlaying() {
 				g = game.New()
-				resetClientKeystrokes(clients)
-			} else if clientCount(clients) >= 2 {
+				clients.resetClientKeystrokes()
+			} else if clients.clientCount() >= 2 {
 				g.Start()
 			}
 			go broadcastMessage(clients, GameUpdate{*g})
@@ -89,7 +57,7 @@ func processEvent(clients cliStore, event CliEvent, g game.Game) {
 			return
 		}
 		slog.Debug("eventProcessor:Insert", "event", event)
-		cli, ok := clientByConn(event.conn, clients)
+		cli, ok := clients.Load(event.conn)
 		if !ok {
 			return // TODO error msg
 		}
@@ -102,11 +70,11 @@ func processEvent(clients cliStore, event CliEvent, g game.Game) {
 }
 
 func broadcastEvent(clients cliStore, event CliEvent) {
-	eventCli, ok := clientByConn(event.conn, clients)
+	eventCli, ok := clients.Load(event.conn)
 	if !ok {
 		// FIXME on register, broadcast runs before
 		// process-ing so we don't have a client in the map
-		slog.Error("broadcastEvent:clientByConn", "ip", event.conn.Conn.LocalAddr())
+		slog.Error("broadcastEvent:clients.clientByConn", "ip", event.conn.Conn.LocalAddr())
 		return
 	}
 	clients.Range(func(c, _ any) bool {
@@ -127,51 +95,9 @@ func broadcastEvent(clients cliStore, event CliEvent) {
 }
 
 func broadcastMessage(clients cliStore, msg any) {
-	clients.Range(func(c, _ any) bool {
-		conn, ok := c.(*fiberWS.Conn)
-		if !ok {
-			return true // TODO error msg
-		}
+	for conn := range clients.All() {
 		sendMessage(conn, msg)
-		return true
-	})
-}
-
-func resetClientKeystrokes(clients cliStore) {
-	clients.Range(func(_, cli any) bool {
-		client, ok := cli.(*client)
-		if !ok {
-			return true // TODO error msg
-		}
-		client.Lock()
-		defer client.Unlock()
-		client.keystrokes = game.Keystrokes{}
-		return true
-	})
-}
-
-func clientCount(clients cliStore) int {
-	count := 0
-	clients.Range(func(key, value any) bool {
-		count++
-		return true
-	})
-	return count
-}
-
-func clientByConn(conn *fiberWS.Conn, clients cliStore) (*client, bool) {
-	v, ok := clients.Load(conn)
-	if !ok {
-		slog.Error("clientByConn:Load")
-		return nil, false
 	}
-	cli, ok := v.(*client)
-	if !ok {
-		slog.Error("clientByConn:*client")
-		panic("YOURE WRONG GGINA")
-		// return nil, false
-	}
-	return cli, true
 }
 
 func sendMessage(conn *fiberWS.Conn, v any) {
